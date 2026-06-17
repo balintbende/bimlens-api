@@ -1,0 +1,64 @@
+name: Api CI/CD
+
+# Controls when the action will run.
+on: [push, pull_request]
+jobs:
+  test:
+    name: "Running tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+
+      - uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: "Install dotnet format"
+        run: dotnet tool update --global dotnet-format
+
+      - name: "Run dotnet format"
+        working-directory: ./src
+        run: dotnet format --verbosity diagnostic --verify-no-changes
+
+      - name: "Unit tests"
+        working-directory: ./src
+        run: dotnet test --test-adapter-path:. --logger:"junit;LogFilePath=../artifacts/test-output.xml"
+
+      - name: "Publish Unit Test Results"
+        uses: EnricoMi/publish-unit-test-result-action@v1.6
+        if: always()
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          files: ./src/artifacts/*.xml
+
+  publish:
+    needs: test
+    name: "Build And Publish Image"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: "Build, tag, and push image to GHCR"
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.GITHUB_REPOSITORY_NAME_PART_SLUG }}
+          IMAGE_TAG: ${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}
+          IMAGE_TAG_LATEST: ${{ env.GITHUB_REF_SLUG }}
+        run: |
+          ts=$(date +%s)
+          docker login --username mert2m --password ${{ secrets.GH_PAT }} ghcr.io
+          docker build . -t ghcr.io/mert2m/actions-runner-controller:latest
+          
+          
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-${ts} \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-${ts}
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST
+
+      - name: Invoke deployment hook
+        uses: distributhor/workflow-webhook@v2
+        env:
+          webhook_url: ${{ secrets.RELEASE_OVERVIEW_WEBHOOK_URL }}
+          webhook_secret: ${{ secrets.RELEASE_OVERVIEW_WEBHOOK_SECRET }}
+          data: '{ "run": "${{ github.run_id }}", "latestTag": "${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}"}'
