@@ -7,9 +7,9 @@ jobs:
     name: "Running tests"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v1
+      - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
 
@@ -34,31 +34,39 @@ jobs:
   publish:
     needs: test
     name: "Build And Publish Image"
+    # Only publish on pushes to branches, not on pull requests.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: "Build, tag, and push image to GHCR"
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ env.GITHUB_REPOSITORY_NAME_PART_SLUG }}
-          IMAGE_TAG: ${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}
-          IMAGE_TAG_LATEST: ${{ env.GITHUB_REF_SLUG }}
-        run: |
-          ts=$(date +%s)
-          docker login --username mert2m --password ${{ secrets.GH_PAT }} ghcr.io
-          docker build . -t ghcr.io/mert2m/actions-runner-controller:latest
-          
-          
-          docker build \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-${ts} \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG-${ts}
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG_LATEST
+      - name: "Log in to GHCR"
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Invoke deployment hook
-        uses: distributhor/workflow-webhook@v2
-        env:
-          webhook_url: ${{ secrets.RELEASE_OVERVIEW_WEBHOOK_URL }}
-          webhook_secret: ${{ secrets.RELEASE_OVERVIEW_WEBHOOK_SECRET }}
-          data: '{ "run": "${{ github.run_id }}", "latestTag": "${{ env.GITHUB_REF_SLUG }}-${{ env.GITHUB_SHA_SHORT }}"}'
+      - name: "Extract image metadata"
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: "Build and push image to GHCR"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
