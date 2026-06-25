@@ -17,4 +17,7 @@ if (app.Environment.IsDevelopment())
 
 app.MapControllers();
 
+// Health check endpoint, used by the Kubernetes readiness probe.
+app.MapGet("/health-check", () => "APPLICATION_IS_OK");
+
 app.Run();
